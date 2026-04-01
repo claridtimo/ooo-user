@@ -45,12 +45,12 @@
     <dependency>
       <groupId>com.samskivert</groupId>
       <artifactId>samskivert</artifactId>
-      <version>1.11</version>
+      <version>1.11.3</version>
     </dependency>
     <dependency>
       <groupId>com.samskivert</groupId>
       <artifactId>depot</artifactId>
-      <version>1.8</version>
+      <version>1.8.3</version>
     </dependency>
     <dependency>
       <groupId>com.google.inject</groupId>
