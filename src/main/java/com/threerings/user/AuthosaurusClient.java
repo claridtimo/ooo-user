@@ -35,10 +35,37 @@ public class AuthosaurusClient
 
     /**
      * Returns any currently saved session token, or null if no token has been stored.
+     * If token persistence is disabled, this always returns null (the token is only available
+     * in-memory via the session listener).
      */
     public String getSessionToken ()
     {
-        return _prefs.get(PREF_SESSION_TOKEN, null);
+        return _persistToken ? _prefs.get(PREF_SESSION_TOKEN, null) : null;
+    }
+
+    /**
+     * Sets whether the session token should be persisted to Java Preferences. When set to false,
+     * the token is only delivered via the session listener and is not saved across client restarts.
+     * Defaults to true.
+     *
+     * <p>If persistence is disabled and a token is already stored in preferences, it is removed.</p>
+     *
+     * @param persist true to save tokens to preferences, false for in-memory only.
+     */
+    public void setPersistToken (boolean persist)
+    {
+        _persistToken = persist;
+        if (!persist) {
+            _prefs.remove(PREF_SESSION_TOKEN);
+        }
+    }
+
+    /**
+     * Returns whether token persistence is enabled.
+     */
+    public boolean getPersistToken ()
+    {
+        return _persistToken;
     }
 
     /**
@@ -232,8 +259,12 @@ public class AuthosaurusClient
                 if ("complete".equals(pollStatus)) {
                     String token = extractJsonString(body, "token");
                     if (token != null && !token.isEmpty()) {
-                        _prefs.put(PREF_SESSION_TOKEN, token);
-                        log.info("Session token received via polling and stored.");
+                        if (_persistToken) {
+                            _prefs.put(PREF_SESSION_TOKEN, token);
+                            log.info("Session token received via polling and stored.");
+                        } else {
+                            log.info("Session token received via polling (not persisted).");
+                        }
                         _polling = false;
 
                         for (Consumer<String> listener : _listeners) {
@@ -308,6 +339,7 @@ public class AuthosaurusClient
 
     private String _gameId;
     private volatile boolean _polling;
+    private volatile boolean _persistToken = true;
 
     private static final String PREF_SESSION_TOKEN = "sessionToken";
     private static final long POLL_INTERVAL_MS = 3000;
