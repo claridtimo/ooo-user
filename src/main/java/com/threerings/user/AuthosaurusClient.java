@@ -9,20 +9,16 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.prefs.Preferences;
-
-import fi.iki.elonen.NanoHTTPD;
-import fi.iki.elonen.NanoHTTPD.Response.Status;
 
 import static com.threerings.user.Log.log;
 
 /**
  * Manages game client interaction with the authosaurus authentication service. Provides methods to
- * start/stop a local HTTP listener for receiving session tokens, initiate login, and query
- * accounts.
+ * initiate login via the browser, poll for the resulting session token, and query accounts.
  */
 public class AuthosaurusClient
 {
@@ -46,9 +42,9 @@ public class AuthosaurusClient
     }
 
     /**
-     * Registers a callback that will be notified when a new session token is received by the auth
-     * listener. The callback may be invoked on the HTTP server's request-handling thread; the
-     * caller is responsible for transferring control to the appropriate UI thread.
+     * Registers a callback that will be notified when a new session token is received via polling.
+     * The callback will be invoked on the polling thread; the caller is responsible for
+     * transferring control to the appropriate UI thread.
      */
     public void onSessionStarted (Consumer<String> callback)
     {
@@ -56,63 +52,67 @@ public class AuthosaurusClient
     }
 
     /**
-     * Starts a local HTTP listener for receiving the session token delivered during the login
-     * flow. A random port in the range 49152–65535 is chosen on first use and persisted via Java
-     * preferences so that the same port is reused for future login sessions.
+     * Generates a new random game id for this login session. This id is used to correlate the
+     * browser login flow with this game client's poll requests.
      *
-     * @return the port on which the listener is accepting connections.
+     * @return the generated game id.
      */
-    public int startAuthListener ()
+    public String generateGameId ()
     {
-        int port = getOrCreateListenerPort();
-
-        if (_server != null) {
-            log.warning("Auth listener already running on port " + port);
-            return port;
-        }
-
-        try {
-            _server = new NanoHTTPD("127.0.0.1", port) {
-                @Override public Response serve (IHTTPSession session) {
-                    if (!"/auth".equals(session.getUri())) {
-                        return newFixedLengthResponse(Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Not found");
-                    }
-                    return handleAuthRequest(session);
-                }
-            };
-            _server.start();
-            log.info("Auth listener started on port " + port);
-        } catch (IOException e) {
-            log.warning("Failed to start auth listener on port " + port, e);
-        }
-
-        return port;
+        _gameId = UUID.randomUUID().toString();
+        return _gameId;
     }
 
     /**
-     * Stops any active auth listener. If the listener is not running, logs a warning and no-ops.
+     * Returns the current game id, or null if {@link #generateGameId} has not been called.
      */
-    public void stopAuthListener ()
+    public String getGameId ()
     {
-        if (_server == null) {
-            log.warning("Auth listener is not running.");
-            return;
+        return _gameId;
+    }
+
+    /**
+     * Starts polling the authosaurus server for a session token associated with the current game
+     * id. Polling runs on a background daemon thread and stops automatically once a token is
+     * received or the login link expires.
+     *
+     * <p>When a token is received, it is stored in preferences and all registered listeners are
+     * notified.</p>
+     *
+     * @throws IllegalStateException if no game id has been generated via {@link #generateGameId}.
+     */
+    public void startPolling ()
+    {
+        if (_gameId == null) {
+            throw new IllegalStateException("Call generateGameId() before startPolling().");
         }
 
-        _server.stop();
-        _server = null;
-        log.info("Auth listener stopped.");
+        stopPolling();
+
+        _polling = true;
+        Thread thread = new Thread(this::pollLoop, "AuthosaurusPoll");
+        thread.setDaemon(true);
+        thread.start();
+        log.info("Started polling for game auth token", "gameId", _gameId);
+    }
+
+    /**
+     * Stops any active polling.
+     */
+    public void stopPolling ()
+    {
+        _polling = false;
     }
 
     /**
      * Initiates a login session by calling the authosaurus /login endpoint with the supplied email
-     * address and port.
+     * address and game id.
      *
      * @param email the user's email address.
-     * @param port the local listener port to which the session token should be delivered.
+     * @param gameId the game id to associate with this login request.
      * @throws AuthException if the login request fails.
      */
-    public void startLogin (String email, int port) throws AuthException
+    public void startLogin (String email, String gameId) throws AuthException
     {
         try {
             URL url = new URL(_authBaseUrl + "/login");
@@ -122,7 +122,7 @@ public class AuthosaurusClient
             conn.setDoOutput(true);
             log.info("Requesting login link", "url", url);
 
-            String json = "{\"email\":" + jsonString(email) + ",\"port\":" + port + "}";
+            String json = "{\"email\":" + jsonString(email) + ",\"id\":" + jsonString(gameId) + "}";
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(json.getBytes(StandardCharsets.UTF_8));
             }
@@ -194,76 +194,81 @@ public class AuthosaurusClient
         }
     }
 
-    private NanoHTTPD.Response handleAuthRequest (NanoHTTPD.IHTTPSession session)
+    private void pollLoop ()
     {
-        NanoHTTPD.Method method = session.getMethod();
-
-        // Handle CORS preflight
-        if (NanoHTTPD.Method.OPTIONS.equals(method)) {
-            NanoHTTPD.Response response = NanoHTTPD.newFixedLengthResponse(
-                Status.NO_CONTENT, NanoHTTPD.MIME_PLAINTEXT, "");
-            addCorsHeaders(response);
-            return response;
-        }
-
-        if (!NanoHTTPD.Method.POST.equals(method)) {
-            return NanoHTTPD.newFixedLengthResponse(
-                Status.METHOD_NOT_ALLOWED, NanoHTTPD.MIME_PLAINTEXT, "Method not allowed");
-        }
-
-        String token;
-        try {
-            // NanoHTTPD requires parsing body into files map for POST
-            Map<String, String> bodyMap = new java.util.HashMap<>();
-            session.parseBody(bodyMap);
-            // For plain text/non-form POSTs, the body is in "postData"
-            token = bodyMap.getOrDefault("postData", "").trim();
-        } catch (IOException | NanoHTTPD.ResponseException e) {
-            log.warning("Failed to read auth request body", e);
-            return NanoHTTPD.newFixedLengthResponse(
-                Status.INTERNAL_ERROR, NanoHTTPD.MIME_PLAINTEXT, "Error reading body");
-        }
-
-        if (token.isEmpty()) {
-            return NanoHTTPD.newFixedLengthResponse(
-                Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Empty token");
-        }
-
-        // Store the session token
-        _prefs.put(PREF_SESSION_TOKEN, token);
-        log.info("Session token received and stored.");
-
-        NanoHTTPD.Response response = NanoHTTPD.newFixedLengthResponse(
-            Status.OK, NanoHTTPD.MIME_PLAINTEXT, "");
-        addCorsHeaders(response);
-
-        // Notify listeners
-        for (Consumer<String> listener : _listeners) {
+        while (_polling) {
             try {
-                listener.accept(token);
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                break;
+            }
+            if (!_polling) break;
+
+            try {
+                URL url = new URL(_authBaseUrl + "/api/auth/game-poll?id=" + _gameId);
+                HttpURLConnection conn = (HttpURLConnection)url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(10_000);
+                conn.setReadTimeout(10_000);
+
+                int status = conn.getResponseCode();
+                String body = readResponseBody(conn, status >= 400);
+
+                if (status == 410) {
+                    // Login expired
+                    log.info("Game auth poll: login expired.");
+                    _polling = false;
+                    break;
+                }
+
+                if (status != 200) {
+                    log.warning("Game auth poll: unexpected status " + status);
+                    continue;
+                }
+
+                // Parse "status" and "token" from the JSON response.
+                // The response is simple enough to parse without a JSON library.
+                String pollStatus = extractJsonString(body, "status");
+                if ("complete".equals(pollStatus)) {
+                    String token = extractJsonString(body, "token");
+                    if (token != null && !token.isEmpty()) {
+                        _prefs.put(PREF_SESSION_TOKEN, token);
+                        log.info("Session token received via polling and stored.");
+                        _polling = false;
+
+                        for (Consumer<String> listener : _listeners) {
+                            try {
+                                listener.accept(token);
+                            } catch (Exception e) {
+                                log.warning("Error in session listener", e);
+                            }
+                        }
+                        break;
+                    }
+                }
+                // status == "pending", keep polling
             } catch (Exception e) {
-                log.warning("Error in session listener", e);
+                log.warning("Game auth poll error", e);
             }
         }
-
-        return response;
     }
 
-    private static void addCorsHeaders (NanoHTTPD.Response response)
+    /**
+     * Extracts a string value for the given key from a simple JSON object.
+     * Only handles flat objects with string values — sufficient for our poll response.
+     */
+    private static String extractJsonString (String json, String key)
     {
-        response.addHeader("Access-Control-Allow-Origin", "*");
-        response.addHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-        response.addHeader("Access-Control-Allow-Headers", "Content-Type");
-    }
-
-    private int getOrCreateListenerPort ()
-    {
-        int port = _prefs.getInt(PREF_LISTENER_PORT, -1);
-        if (port == -1) {
-            port = 49152 + (int)(Math.random() * (65535 - 49152 + 1));
-            _prefs.putInt(PREF_LISTENER_PORT, port);
-        }
-        return port;
+        String needle = "\"" + key + "\"";
+        int keyIdx = json.indexOf(needle);
+        if (keyIdx == -1) return null;
+        int colonIdx = json.indexOf(':', keyIdx + needle.length());
+        if (colonIdx == -1) return null;
+        int openQuote = json.indexOf('"', colonIdx + 1);
+        if (openQuote == -1) return null;
+        int closeQuote = json.indexOf('"', openQuote + 1);
+        if (closeQuote == -1) return null;
+        return json.substring(openQuote + 1, closeQuote);
     }
 
     private static AuthException mapErrorResponse (int status, String body)
@@ -300,8 +305,10 @@ public class AuthosaurusClient
     private final String _authBaseUrl;
     private final Preferences _prefs = Preferences.userNodeForPackage(AuthosaurusClient.class);
     private final CopyOnWriteArrayList<Consumer<String>> _listeners = new CopyOnWriteArrayList<>();
-    private NanoHTTPD _server;
 
-    private static final String PREF_LISTENER_PORT = "authListenerPort";
+    private String _gameId;
+    private volatile boolean _polling;
+
     private static final String PREF_SESSION_TOKEN = "sessionToken";
+    private static final long POLL_INTERVAL_MS = 3000;
 }

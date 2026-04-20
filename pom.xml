@@ -63,11 +63,6 @@
       <version>6.0.0</version>
       <scope>provided</scope>
     </dependency>
-    <dependency>
-      <groupId>org.nanohttpd</groupId>
-      <artifactId>nanohttpd</artifactId>
-      <version>2.3.1</version>
-    </dependency>
     <!-- https://mvnrepository.com/artifact/de.mkammerer/argon2-jvm -->
     <dependency>
         <groupId>de.mkammerer</groupId>
