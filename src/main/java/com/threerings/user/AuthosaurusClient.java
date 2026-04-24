@@ -79,68 +79,31 @@ public class AuthosaurusClient
     }
 
     /**
-     * Generates a new random game id for this login session. This id is used to correlate the
-     * browser login flow with this game client's poll requests.
+     * Returns the URL for the create-account page, with a newly generated game id appended as a
+     * query parameter. After opening this URL in a browser, call {@link #startPolling} to wait
+     * for the resulting session token.
      *
-     * @return the generated game id.
+     * @return the create-account URL.
      */
-    public String generateGameId ()
+    public String getCreateAccountUrl ()
     {
         _gameId = UUID.randomUUID().toString();
-        return _gameId;
-    }
-
-    /**
-     * Returns the current game id, or null if {@link #generateGameId} has not been called.
-     */
-    public String getGameId ()
-    {
-        return _gameId;
-    }
-
-    /**
-     * Starts polling the authosaurus server for a session token associated with the current game
-     * id. Polling runs on a background daemon thread and stops automatically once a token is
-     * received or the login link expires.
-     *
-     * <p>When a token is received, it is stored in preferences and all registered listeners are
-     * notified.</p>
-     *
-     * @throws IllegalStateException if no game id has been generated via {@link #generateGameId}.
-     */
-    public void startPolling ()
-    {
-        if (_gameId == null) {
-            throw new IllegalStateException("Call generateGameId() before startPolling().");
-        }
-
-        stopPolling();
-
-        _polling = true;
-        Thread thread = new Thread(this::pollLoop, "AuthosaurusPoll");
-        thread.setDaemon(true);
-        thread.start();
-        log.info("Started polling for game auth token", "gameId", _gameId);
-    }
-
-    /**
-     * Stops any active polling.
-     */
-    public void stopPolling ()
-    {
-        _polling = false;
+        return _authBaseUrl + "/create_account?id=" + _gameId;
     }
 
     /**
      * Initiates a login session by calling the authosaurus /login endpoint with the supplied email
-     * address and game id.
+     * address. Generates a new game id internally for correlating the browser login flow with
+     * subsequent poll requests. After calling this method, call {@link #startPolling} to wait for
+     * the resulting session token.
      *
      * @param email the user's email address.
-     * @param gameId the game id to associate with this login request.
      * @throws AuthException if the login request fails.
      */
-    public void startLogin (String email, String gameId) throws AuthException
+    public void startLogin (String email) throws AuthException
     {
+        String gameId = UUID.randomUUID().toString();
+        _gameId = gameId;
         try {
             URL url = new URL(_authBaseUrl + "/login");
             HttpURLConnection conn = (HttpURLConnection)url.openConnection();
@@ -167,6 +130,41 @@ public class AuthosaurusClient
         } catch (IOException e) {
             throw new AuthException(AuthException.NETWORK_ERROR, e);
         }
+    }
+
+    /**
+     * Starts polling the authosaurus server for a session token associated with the current game
+     * id. Polling runs on a background daemon thread and stops automatically once a token is
+     * received or the login link expires.
+     *
+     * <p>When a token is received, it is stored in preferences and all registered listeners are
+     * notified.</p>
+     *
+     * @throws IllegalStateException if no game id has been set via {@link #startLogin} or
+     *     {@link #getCreateAccountUrl}.
+     */
+    public void startPolling ()
+    {
+        if (_gameId == null) {
+            throw new IllegalStateException(
+                "Call startLogin() or getCreateAccountUrl() before startPolling().");
+        }
+
+        stopPolling();
+
+        _polling = true;
+        Thread thread = new Thread(this::pollLoop, "AuthosaurusPoll");
+        thread.setDaemon(true);
+        thread.start();
+        log.info("Started polling for game auth token", "gameId", _gameId);
+    }
+
+    /**
+     * Stops any active polling.
+     */
+    public void stopPolling ()
+    {
+        _polling = false;
     }
 
     /**
