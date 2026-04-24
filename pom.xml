@@ -5,7 +5,7 @@
   <groupId>com.threerings</groupId>
   <artifactId>ooo-user</artifactId>
   <packaging>jar</packaging>
-  <version>1.7-SNAPSHOT</version>
+  <version>1.6.7</version>
 
   <name>ooo-user</name>
   <description>A bunch of user management code used by OOO.</description>
@@ -34,7 +34,7 @@
     <connection>scm:git:git://github.com/threerings/ooo-user.git</connection>
     <developerConnection>scm:git:git@github.com:threerings/ooo-user.git</developerConnection>
     <url>https://github.com/threerings/ooo-user</url>
-    <tag>HEAD</tag>
+    <tag>ooo-user-1.6.7</tag>
   </scm>
 
   <prerequisites>
