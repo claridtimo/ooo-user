@@ -215,6 +215,31 @@ public class OOOUserRepository extends UserRepository
     }
 
     /**
+     * Updates the stored (already-encrypted) password for the specified user. Used to migrate a
+     * legacy unsalted-MD5 password to an Argon2 hash on successful login.
+     */
+    public void updatePassword (final int userId, final String encrypted)
+        throws PersistenceException
+    {
+        executeUpdate(new Operation<Object>() {
+            public Object invoke (Connection conn, DatabaseLiaison liaison)
+                throws PersistenceException, SQLException
+            {
+                PreparedStatement stmt = null;
+                try {
+                    stmt = conn.prepareStatement("update users set password = ? where userId = ?");
+                    stmt.setString(1, encrypted);
+                    stmt.setInt(2, userId);
+                    stmt.executeUpdate();
+                    return null;
+                } finally {
+                    JDBCUtil.close(stmt);
+                }
+            }
+        });
+    }
+
+    /**
      * Updates the active state of the specified user for the specified site flag (e.g. {@link
      * OOOUser#IS_ACTIVE_YOHOHO_PLAYER}).
      */
